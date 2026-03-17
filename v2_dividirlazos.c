@@ -1,0 +1,161 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include "counter.h"
+
+/* Definición de datos para el algoritmo */
+#define TOL 1e-5
+#define MAXITER 15000
+
+// FORMATO DE EJECUCIÓN: ./v1 <tamaño vector> <número hilos> 
+int main(int argc, char **argv){
+	/* Establecer semilla */
+	srand(1);	// la misma semilla para tener los mismos sistemas de ecuaciones
+
+	/* Definición de datos necesarios */
+	double **a;	// matriz de coeficientes
+	double *b;	// vector de términos independientes
+	double *x;	// vector de soluciones
+	double *x_new;	// vector de nueva solución
+	
+	// Datos que no necesitan reservas de memoria
+	double ciclos;	// Número de ciclos medidos
+	double norm2;	// Norma del vector al cuadrado
+	double sigma;	// dato de apoyo para el algoritmo
+	int n = 0;	// tamaño de los vectores
+	
+	/* Comprobar argumentos */
+	if(argc < 2 || argc > 3){
+		printf("Error. Número de argumentos incorrectos.\n");
+		return 1;
+	}
+	
+	// En caso de poner 2 o 3 argumentos, el primero será el n
+	// El otro argumento, ie, el número de hilos, se omitirá en esta versión
+	// Comprobamos que se haya especificado un tamaño positivo
+	n = atoi(argv[1]);
+	if(n <= 0) n = 1;
+
+	/* Reservas de memoria */
+	// Matriz n * n alineada con el comienzo de línea de 64 bytes
+	a = (double**) aligned_alloc(64, n * n * sizeof(double));
+	b = (double*) aligned_alloc(64, n * sizeof(double));
+	x = (double*) aligned_alloc(64, n * sizeof(double));
+	x_new = (double*) aligned_alloc(64, n * sizeof(double));
+	
+	// Reservar memoria alineada para las filas de la matriz
+	for(int i = 0; i < n; i++){
+		a[i] = (double*) aligned_alloc(64, n * sizeof(double)); 
+		
+		// Inicializamos los elementos del vector b (también entre 1 y 2)
+		// Línea movida del bucle siguiente para optimizar el código (división de bucles)
+		b[i] = (((double) rand()) / RAND_MAX) + 1; 
+		
+		// Estimación de la solución (todo a cero)
+		// Línea movida del bucle posterior para dividir lazos
+		x[i] = 0.0;
+	}
+
+	/* Inicializar datos de los vectores y la matriz */
+	for(int i = 0; i < n; i++){
+		// Inicializamos elementos diagonal
+		a[i][i] = (((double) rand()) / RAND_MAX) + 1;
+
+		for(int j = 0; j < n; j++){
+			// rand() produce números entre 0 y RAND_MAX (por eso dividimos)
+			// Números aleatorios entre 0 y 1 trasladados a 1 y 2
+			// Intentamos no sobreescribir el coeficiente diagonal
+        		if(i != j) a[i][j] = (((double) rand()) / RAND_MAX) + 1;
+
+			// Sumamos los elementos recién inicializados a la diagonal
+			// Así, a será una matriz diagonal dominante
+			if(i != j) a[i][i] += a[i][j];
+		}
+    	}
+
+	/* Iniciar contador de ciclos para el algoritmo */
+	start_counter();
+
+	/* Bucle para el método de Jacobi */
+	for(int iter = 0; iter < MAXITER; iter++){
+		// Reiniciamos valor de la norma
+		norm2 = 0.0;
+
+		// Bucle para la siguiente iteración de la solución
+		// Primer bucle:
+		// Restamos n en módulo 2 para el caso donde n sea impar
+		for(int i = 0; i < n/2 - n%2; i++){
+			// Reiniciamos valor de sigma
+			sigma = 0.0;
+
+			// Subbucle para incrementar sigma
+			// Aprovechamos la división de lazos para saltarnos la diagonal i
+			for(int j = 0; j < i; j++){
+				sigma += a[i][j] * x[j];
+			}
+			for(int j = i+1; j < n; j++){
+				sigma += a[i][j] * x[j];
+			}
+
+			// Calculamos el nuevo elemento de x
+			x_new[i] = (b[i] - sigma) / a[i][i];
+			
+			// Comprobamos la diferencia entre soluciones
+			// Elevamos a 2.0000 para hacer los cálculos en doble precisión
+			norm2 += pow((x_new[i] - x[i]), 2.0000);
+			
+			// Actualizamos el vector x
+			// Línea movida a dentro de este bucle para fusionar lazos
+			x[i] = x_new[i];
+		}
+		// Segundo bucle:
+		for(int i = n/2 - n%2; i < n; i++){
+			// Reiniciamos valor de sigma
+			sigma = 0.0;
+
+			// Subbucle para incrementar sigma
+			for(int j = 0; j < i; j++){
+				sigma += a[i][j] * x[j];
+			}
+			for(int j = i+1; j < n; j++){
+				sigma += a[i][j] * x[j];
+			}
+
+			// Calculamos el nuevo elemento de x
+			x_new[i] = (b[i] - sigma) / a[i][i];
+			
+			// Comprobamos la diferencia entre soluciones
+			// Elevamos a 2.0000 para hacer los cálculos en doble precisión
+			norm2 += pow((x_new[i] - x[i]), 2.0000);
+			
+			// Actualizamos el vector x
+			// Línea movida a dentro de este bucle para fusionar lazos
+			x[i] = x_new[i];
+		}
+		
+		// Comprobamos que se ha alcanzado la tolerancia (salimos si es así)
+		// sqrtl para la mayor precisión posible
+		if(sqrtl(norm2) < TOL) break;
+	}
+
+	/* Medir número de ciclos al terminar */
+	ciclos = get_counter(); 
+
+	/* Impresión de resultados */
+	printf("\n%.15f\n", norm2);	// Impresión de la norma al cuadrado (15 decimales)
+	// printf("\nSolución calculada:\n");
+	// for(int k = 0; k < n; k++) printf("x[%d] = %lf\n", k, x[k]);
+	
+	printf("\n%lf\n", ciclos);	// Imprimir ciclos medidos
+
+	/* Liberar variables */
+	for(int i = 0; i < n; i++) free(a[i]);
+	free(a);
+	free(b);
+	free(x);
+	free(x_new);
+
+	return 0;
+}
+
+// COMPILACIÓN: gcc -O0 v2.c -lm
